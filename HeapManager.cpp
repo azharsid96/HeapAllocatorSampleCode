@@ -4,7 +4,6 @@
 #include "pch.h"
 #include <iostream>
 #include <Windows.h>
-#include <assert.h>
 #include <algorithm>
 #include <vector>
 
@@ -12,26 +11,37 @@
 #define SUPPORTS_SHOWFREEBLOCKS
 #define SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
 
-//extern bool HeapManager_UnitTest();
-
-//bool HeapManager_UnitTest();
-
+/**
+* Used to store key information about each free or allocated memory block
+*/
 struct BlockDescriptor {
-	uint8_t* startMemBlockAddr;
-	size_t sizeOfBlock;
-	BlockDescriptor* nextBlock;
-	BlockDescriptor* prevBlock;
+	uint8_t* startMemBlockAddr;     // reference to memory address of the start of actual memory block (not the block descriptor starting address)
+	size_t sizeOfBlock;             // size of memory block (excluding block descriptor size and guardbanding)
+	BlockDescriptor* nextBlock;     // reference to the next memory block
+	BlockDescriptor* prevBlock;     // reference to the previous memory block
 };
 
+/**
+* Creates the heap manager and handles all operations of allocating and freeing memory blocks 
+* inside the heap manager
+*/
 class HeapManager {
 
 	public:
 
-		static HeapManager* create(void* heapMemory, size_t heapMemorySize) {
+        /**
+        * Initializes the heap memory manager with one large heap memory block 
+        *
+        * @param heapMemory void pointer to hold address of heap manager.
+        * @param heapMemorySize Total avaialble memory inside the heap manager.
+        * @return A pointer to the heap manager that was initialised.
+        */
+		static HeapManager* HeapManager::create(void* heapMemory, size_t heapMemorySize) {
 
 			HeapManager* heapManager = (HeapManager*)heapMemory;
 			heapManager->startOfHeap = reinterpret_cast<uint8_t*>(heapMemory) + sizeof(HeapManager);
 			
+            // Initialising one large heap memory block to hold entire heap memory (excluding space set aside for BlockDescriptor struct attached to this block)
 			BlockDescriptor* temp = reinterpret_cast<BlockDescriptor*>(heapManager->startOfHeap);
 			temp->sizeOfBlock = heapMemorySize - sizeof(HeapManager) - sizeof(BlockDescriptor);
 			temp->startMemBlockAddr = reinterpret_cast<uint8_t*>(heapManager->startOfHeap) + sizeof(BlockDescriptor);
@@ -45,8 +55,16 @@ class HeapManager {
 
 		};
 
-		void* _alloc(size_t i_bytes, unsigned int i_alignment) {
+        /**
+        * Allocates a memory block of a given size if a free block of the given size or more exists in the heap manager 
+        *
+        * @param i_bytes void pointer to hold address of heap manager.
+        * @param i_alignment Padding to ensure the returning allocated block's memory address is aligned with other already allocated blocks' memory address
+        * @return A void pointer pointing to the starting memory address of the newly allocated memory block. NULL if a new block could not be allocated
+        */
+		void* HeapManager::_alloc(size_t i_bytes, unsigned int i_alignment) {
 			
+            //guardbanding to prevent memory overwrite at the start and end of each heap memory block
 			size_t guardbanding = 4;
 
 			size_t allignedAllocRequest;
@@ -60,33 +78,40 @@ class HeapManager {
 			}
 
 			BlockDescriptor* temp = this->FreeBlocks;
+
 			//makes sure there is a free block big eniugh to satisfy alloc request
 			while (temp != nullptr) {
 				if (temp->sizeOfBlock >= i_bytes)
 					break;
 				temp = temp->nextBlock;
 			}
-			//a big enough free block was found that was big enough to satisfy alloc request
+			//a big enough free block was found that was enough to satisfy alloc request
 			if (temp)
 			{
 				size_t prevBlockSize;
 				prevBlockSize = temp->sizeOfBlock;
-				
 
-				if (temp->prevBlock != nullptr && temp->nextBlock!=nullptr)
+                // if chosen free block is in the middle of the free block list
+				if (temp->prevBlock != nullptr && temp->nextBlock != nullptr)
 				{
+                     //break all the links for this chosen free block from the free blocks list and update the links in the free blocks list accordingly
 					temp->prevBlock->nextBlock = temp->nextBlock;
 					temp->nextBlock->prevBlock = temp->prevBlock;
 				}
+                // if chosen free block is at the end of the free block list
 				else if(temp->prevBlock != nullptr)
 				{
+                     //break all the links for this chosen free block from the free blocks list and update the links in the free blocks list accordingly
 					temp->prevBlock->nextBlock = temp->nextBlock;
 				}
+                // if chosen free block is at the start of the free block list
 				else
 				{
+                     //break all the links for this chosen free block from the free blocks list and update the links in the free blocks list accordingly
 					this->FreeBlocks = this->FreeBlocks->nextBlock;
 				}
 
+                //add the chosen free block to the start of the allocated blocks list and setup the links accordingly 
 				if (this->AllocatedBlocks != nullptr)
 				{
 					this->AllocatedBlocks->prevBlock = temp;
@@ -95,15 +120,20 @@ class HeapManager {
 				temp->nextBlock = this->AllocatedBlocks;
 				this->AllocatedBlocks = temp;
 				
+                //Ensure that the chosen free block still satisfies the alloc request after alloc size request is adjusted for alignment
 				if ((prevBlockSize - allignedAllocRequest - sizeof(BlockDescriptor) > sizeof(BlockDescriptor)))
 				{
 					temp->sizeOfBlock = allignedAllocRequest;
+                    //since the chosen free block is big enough to satisfy alloc request even after alignment, add a new free block to the free list 
+                    //accounting for the depleted free memory available after alloc request is successful 
 					BlockDescriptor* newFreeBlock = (BlockDescriptor*)temp->startMemBlockAddr + i_bytes + guardbanding;
 					newFreeBlock->sizeOfBlock = prevBlockSize - i_bytes - sizeof(BlockDescriptor);
 					newFreeBlock->startMemBlockAddr = reinterpret_cast<uint8_t*>(newFreeBlock) + sizeof(BlockDescriptor);
 
+                    // if the free block list is not empty
 					if (this->FreeBlocks != nullptr)
 					{
+                        //adds this new free block at the head of the free block list and update links
 						newFreeBlock->nextBlock = this->FreeBlocks;
 						newFreeBlock->prevBlock = this->FreeBlocks->prevBlock;
 						this->FreeBlocks->prevBlock = newFreeBlock;
@@ -111,14 +141,16 @@ class HeapManager {
 						this->FreeBlocks = newFreeBlock;
 
 					}
+                    // if the free block list is empty
 					else
 					{
+                        //adds this new free block at the head of the free block list and update links
 						this->FreeBlocks = newFreeBlock;
 						this->FreeBlocks->nextBlock = nullptr;
 						this->FreeBlocks->prevBlock = nullptr;
 					}
 				}
-
+                // returning memory address of the newly allocated block sitting at the head of the allocated block list
 				return this->AllocatedBlocks->startMemBlockAddr;
 			}
 			//no big enough free block was found to satisfy alloc request
@@ -129,7 +161,12 @@ class HeapManager {
 			
 		};
 
-		void _free(void* i_ptr) {
+        /**
+        * Frees a memory block at the given memory address 
+        *
+        * @param i_ptr void pointer to the address in heap memory where a block needs to be freed.
+        */
+		void HeapManager::_free(void* i_ptr) {
 
 			BlockDescriptor* tempAlloc = this->AllocatedBlocks;
 			BlockDescriptor* tempFree = this->FreeBlocks;
@@ -139,20 +176,22 @@ class HeapManager {
 					break;
 				tempAlloc = tempAlloc->nextBlock;
 			}
-			//the previous while loop found the correct tempAlloc block that should be freed
+			//the previous while loop found the correct allocated block that should be freed
 			if (tempAlloc) {
-				//if tempAlloc is the head of the alloc list
+				//if the chosen allocated block is at the head of the allocated blocks list
 				if (tempAlloc == this->AllocatedBlocks)
 				{
-					//tempAlloc is the head and there is more than one block in the alloc list
+					//if the chosen allocated block is the head and there is more than one block in the allocated block list
 					if (this->AllocatedBlocks->nextBlock != nullptr) {
+                        //break all the links for this chosen allocated block from the allocated blocks list and update the links in the allocated blocks list accordingly
 						this->AllocatedBlocks = this->AllocatedBlocks->nextBlock;
 						this->AllocatedBlocks->prevBlock = nullptr;
 						tempAlloc->prevBlock = nullptr;
 						tempAlloc->nextBlock = nullptr;
 					}
-					//tempAlloc is the head and there is only one block in the alloc list
+					//chosen allocated block is the head and is the only block in the allocated blocks list
 					else {
+                        //break all the links for this chosen allocated block from the allocated blocks list and update the links in the allocated blocks list accordingly
 						this->AllocatedBlocks = this->AllocatedBlocks->nextBlock;
 						tempAlloc->prevBlock = nullptr;
 						tempAlloc->nextBlock = nullptr;
@@ -160,40 +199,39 @@ class HeapManager {
 					
 					
 				}
-				//if tempAlloc is not the head of the alloc list
+				//if chosen allocated block is not at the head of the allocated blocks list
 				else {
-					//if there exists a block before tempAlloc
+					//if there exists a block before chosen allocated block
 					if (tempAlloc->prevBlock != nullptr)
 					{
-						//if tempAlloc has a next block
+						//if chosen allocated block has a next block
 						if (tempAlloc->nextBlock != nullptr)
 						{
-							//set tempAlloc's prev block's next block in allocated list to temp's next block
+							//set chosen allocated block's prev block's next block in allocated list to chosen allocated block's next block
 							tempAlloc->prevBlock->nextBlock = tempAlloc->nextBlock;
 						}
-						//if tempAlloc does not have a next block
+						//if chosen allocated block does not have a next block
 						else 
 						{
-							//set temp's prev block's next block to null since tempAlloc has no next block in the allocated list
+							//set chosen allocated block's prev block's next block to null since chosen allocated block has no next block in the allocated blocks list
 							tempAlloc->prevBlock->nextBlock = nullptr;
 						}
 					}
-					//if there exists a block after tempAlloc
+					//if there exists a block after chosen allocated block
 					if (tempAlloc->nextBlock != nullptr)
 					{
-						//set temp's next block in allocated list to temp's prev block
+						//set chosen allocated block's next block in allocated blocks list to chosen allocated block's prev block
 						tempAlloc->nextBlock->prevBlock = tempAlloc->prevBlock;
 					}
 				}
-				
-				
 
 				while (tempFree != nullptr) {
-					//find the right place to put this newly freed tempAlloc block in the free list (insertion sort)
+					//find the first right place in the ascending memory addresses of the free blocks list to put this newly freed tempAlloc block in (insertion sort)
 					if (tempAlloc->startMemBlockAddr + tempAlloc->sizeOfBlock < reinterpret_cast<uint8_t*>(tempFree)) {
 						//if tempFree is not the head of the free list
 						if (tempFree->prevBlock != nullptr)
 						{
+                            //inserts the newly freed block in between the tempFree and it's previous block
 							BlockDescriptor* oldTempFreePrevBlock = tempFree->prevBlock;
 							tempFree->prevBlock = tempAlloc;
 							oldTempFreePrevBlock->nextBlock = tempAlloc;
@@ -202,6 +240,7 @@ class HeapManager {
 							break;
 						}
 						else {
+                            //inserts the newly freed block at the head of the free blocks list
 							tempFree->prevBlock = tempAlloc;
 							tempAlloc->nextBlock = tempFree;
 							tempAlloc->prevBlock = nullptr;
@@ -213,25 +252,32 @@ class HeapManager {
 					tempFree = tempFree->nextBlock;
 				}
 			}
+            //an allocated block with the same starting memory block address as i_ptr could not be found
 			else {
 				printf("Invalid free request\n");
 			}
 		};
 
-		// attempt to merge abutting blocks.
-		void Collect() {
+		/**
+        * Attempts to merge abutting free blocks
+        */
+		void HeapManager::Collect() {
 
 			BlockDescriptor* tempFree = this->FreeBlocks;
 
 			while (tempFree->nextBlock != nullptr)
 			{
+                // if an allocated block does not exist (based on it's starting memory block address) between two free blocks then merge 
+                // those free blocks into one block and update the links in the free blocks list accordingly
 				if ((tempFree->startMemBlockAddr + tempFree->sizeOfBlock) < reinterpret_cast<uint8_t*>(tempFree->nextBlock)) {
+                    // if the 2 neighboring free blocks are NOT at the end of the free blocks list
 					if (tempFree->nextBlock->nextBlock != nullptr)
 					{
 						tempFree->sizeOfBlock += tempFree->nextBlock->sizeOfBlock;
 						tempFree->nextBlock->nextBlock->prevBlock = tempFree;
 						tempFree->nextBlock = tempFree->nextBlock->nextBlock;
 					}
+                    // if the 2 neighboring free blocks are NOT at the end of the free blocks list
 					else {
 						tempFree->sizeOfBlock += tempFree->nextBlock->sizeOfBlock;
 						tempFree->nextBlock = nullptr;
@@ -240,31 +286,30 @@ class HeapManager {
 			}
 		};
 
+        /**
+        * Returns true or false on whether a given pointer points to a memory address within the heap memory manager 
+        *
+        * @param i_ptr void pointer to a mmeory address.
+        * @return TRUE - i_ptr points to a memory adress inside the heap memory manager. 
+        *         FALSE - i_ptr does not point to a memory adress inside the heap memory manager.
+        */
 		bool Contains(void * i_ptr) {
-
-			/*BlockDescriptor* tempAlloc = this->AllocatedBlocks;
-			BlockDescriptor* tempFree = this->FreeBlocks;
-			while (tempAlloc != nullptr) {
-				if (tempAlloc->startMemBlockAddr == reinterpret_cast<uint8_t*>(i_ptr)) {
-					return 1;
-				}
-				tempAlloc = tempAlloc->nextBlock;
-			}
-			while (tempFree != nullptr) {
-				if (tempFree->startMemBlockAddr == reinterpret_cast<uint8_t*>(i_ptr)) {
-					return 1;
-				}
-				tempFree = tempFree->nextBlock;
-			}*/
-
 			return ((i_ptr >= this->startOfHeap) && (i_ptr <= (this->startOfHeap + this->sizeOfHeap)));
 		};
 
+        /**
+        * Returns true or false on whether a given pointer points to any allocated memory block address
+        *
+        * @param i_ptr void pointer to a mmeory address.
+        * @return TRUE - i_ptr points to any allocated memory block address. 
+        *         FALSE - i_ptr does not point to any allocated memory block address.
+        */
 		bool IsAllocated(void * i_ptr) {
 
 			BlockDescriptor* temp = this->AllocatedBlocks;
 
 			while (temp != nullptr) {
+                // returns true if the starting memory block address of an allocated block is equal to i_ptr
 				if (temp->startMemBlockAddr == reinterpret_cast<uint8_t*>(i_ptr)) {
 					return 1;
 				}
@@ -274,6 +319,11 @@ class HeapManager {
 			return 0;
 		};
 
+        /**
+        * Gets the largest free block in size that exists in the free blocks list
+        *
+        * @return size of the largest block available in the free blocks list
+        */
 		size_t GetLargestFreeBlock() {
 			
 			size_t largestFreeBlock = 0;
@@ -283,6 +333,7 @@ class HeapManager {
 				BlockDescriptor* temp = this->FreeBlocks;
 
 				while (temp != nullptr) {
+                    //compare the size of the current free block with the largest free block so far
 					if (temp->sizeOfBlock > largestFreeBlock) {
 						largestFreeBlock = temp->sizeOfBlock;
 					}
@@ -298,6 +349,11 @@ class HeapManager {
 
 		};
 
+        /**
+        * Gets the cumulative total size of all the blocks in the free block list
+        *
+        * @return cumulative size of all the blocks in the free block list
+        */
 		size_t GetTotalFreeMemory() {
 
 			if (this->FreeBlocks != nullptr)
@@ -306,6 +362,7 @@ class HeapManager {
 				BlockDescriptor* temp = this->FreeBlocks;
 
 				while (temp != nullptr) {
+                    //adding up each memory block's actual block size (excluding block descriptor and guardbanding size)
 					totalFreeMemory += temp->sizeOfBlock;
 					temp = temp->nextBlock;
 				}
@@ -317,6 +374,9 @@ class HeapManager {
 			}
 		}
 
+        /**
+        * Printing the free blocks linked list to the console showing key information
+        */
 		void ShowFreeBlocks() {
 			BlockDescriptor* temp = this->FreeBlocks;
 
@@ -327,6 +387,9 @@ class HeapManager {
 			}
 		};
 
+        /**
+        * Printing the allocated blocks linked list to the console showing key information
+        */
 		void ShowOutstandingAllocations() {
 			BlockDescriptor* temp = this->AllocatedBlocks;
 
@@ -359,7 +422,7 @@ int main()
 	void* pHeapMemory = HeapAlloc(GetProcessHeap(), 0, sizeHeap);
 
 	HeapManager* i_ptr = HeapManager::create(pHeapMemory, sizeHeap);
-
+    
 	int* p= (int*)i_ptr->_alloc(13, 16);
 
 	int* q = (int*)i_ptr->_alloc(33, 32);
@@ -407,195 +470,3 @@ int main()
 
 	i_ptr->ShowOutstandingAllocations();
 }
-/*
-bool HeapManager_UnitTest()
-{
-	using namespace HeapManagerHandler;
-	const size_t 		sizeHeap = 1024 * 1024;
-	const unsigned int 	numDescriptors = 2048;
-#ifdef USE_HEAP_ALLOC
-	void* pHeapMemory = HeapAlloc(GetProcessHeap(), 0, sizeHeap);
-#else
-	// Get SYSTEM_INFO, which includes the memory page size
-	SYSTEM_INFO SysInfo;
-	GetSystemInfo(&SysInfo);
-	// round our size to a multiple of memory page size
-	assert(SysInfo.dwPageSize > 0);
-	size_t sizeHeapInPageMultiples = SysInfo.dwPageSize * ((sizeHeap + SysInfo.dwPageSize) / SysInfo.dwPageSize);
-	void* pHeapMemory = VirtualAlloc(NULL, sizeHeapInPageMultiples, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-#endif
-	assert(pHeapMemory);
-	// Create a heap manager for my test heap.
-	HeapManager * pHeapManager = CreateHeapManager(pHeapMemory, sizeHeap, numDescriptors);
-	assert(pHeapManager);
-	if (pHeapManager == nullptr)
-		return false;
-#ifdef TEST_SINGLE_LARGE_ALLOCATION
-	// This is a test I wrote to check to see if using the whole block if it was almost consumed by 
-	// an allocation worked. Also helped test my ShowFreeBlocks() and ShowOutstandingAllocations().
-	{
-#ifdef SUPPORTS_SHOWFREEBLOCKS
-		ShowFreeBlocks(pHeapManager);
-#endif // SUPPORTS_SHOWFREEBLOCKS
-		size_t largestBeforeAlloc = GetLargestFreeBlock(pHeapManager);
-		void * pPtr = alloc(pHeapManager, largestBeforeAlloc - HeapManager::s_MinumumToLeave);
-		if (pPtr)
-		{
-#if defined(SUPPORTS_SHOWFREEBLOCKS) || defined(SUPPORTS_SHOWOUTSTANDINGALLOCATIONS)
-			printf("After large allocation:\n");
-#ifdef SUPPORTS_SHOWFREEBLOCKS
-			ShowFreeBlocks(pHeapManager);
-#endif // SUPPORTS_SHOWFREEBLOCKS
-#ifdef SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-			ShowOutstandingAllocations(pHeapManager);
-#endif // SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-			printf("\n");
-#endif
-			size_t largestAfterAlloc = GetLargestFreeBlock(pHeapManager);
-			bool success = Contains(pHeapManager, pPtr) && IsAllocated(pHeapManager, pPtr);
-			assert(success);
-			success = free(pHeapManager, pPtr);
-			assert(success);
-			Collect(pHeapManager);
-#if defined(SUPPORTS_SHOWFREEBLOCKS) || defined(SUPPORTS_SHOWOUTSTANDINGALLOCATIONS)
-			printf("After freeing allocation and garbage collection:\n");
-#ifdef SUPPORTS_SHOWFREEBLOCKS
-			ShowFreeBlocks(pHeapManager);
-#endif // SUPPORTS_SHOWFREEBLOCKS
-#ifdef SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-			ShowOutstandingAllocations(pHeapManager);
-#endif // SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-			printf("\n");
-#endif
-			size_t largestAfterCollect = GetLargestFreeBlock(pHeapManager);
-		}
-	}
-#endif
-	std::vector<void *> AllocatedAddresses;
-	long	numAllocs = 0;
-	long	numFrees = 0;
-	long	numCollects = 0;
-	// allocate memory of random sizes up to 1024 bytes from the heap manager
-	// until it runs out of memory
-	do
-	{
-		const size_t		maxTestAllocationSize = 1024;
-		size_t			sizeAlloc = 1 + (rand() & (maxTestAllocationSize - 1));
-#ifdef SUPPORTS_ALIGNMENT
-		// pick an alignment
-		const unsigned int	alignments[] = { 4, 8, 16, 32, 64 };
-		const unsigned int	index = rand() % (sizeof(alignments) / sizeof(alignments[0]));
-		const unsigned int	alignment = alignments[index];
-		void * pPtr = alloc(pHeapManager, sizeAlloc, alignment);
-		// check that the returned address has the requested alignment
-		assert((reinterpret_cast<uintptr_t>(pPtr) & (alignment - 1)) == 0);
-#else
-		void * pPtr = alloc(pHeapManager, sizeAlloc);
-#endif // SUPPORT_ALIGNMENT
-		// if allocation failed see if garbage collecting will create a large enough block
-		if (pPtr == nullptr)
-		{
-			Collect(pHeapManager);
-#ifdef SUPPORTS_ALIGNMENT
-			pPtr = alloc(pHeapManager, sizeAlloc, alignment);
-#else
-			pPtr = alloc(pHeapManager, sizeAlloc);
-#endif // SUPPORT_ALIGNMENT
-			// if not we're done. go on to cleanup phase of test
-			if (pPtr == nullptr)
-				break;
-		}
-		AllocatedAddresses.push_back(pPtr);
-		numAllocs++;
-		// randomly free and/or garbage collect during allocation phase
-		const unsigned int freeAboutEvery = 10;
-		const unsigned int garbageCollectAboutEvery = 40;
-		if (!AllocatedAddresses.empty() && ((rand() % freeAboutEvery) == 0))
-		{
-			void * pPtr = AllocatedAddresses.back();
-			AllocatedAddresses.pop_back();
-			bool success = Contains(pHeapManager, pPtr) && IsAllocated(pHeapManager, pPtr);
-			assert(success);
-			success = free(pHeapManager, pPtr);
-			assert(success);
-			numFrees++;
-		}
-		if ((rand() % garbageCollectAboutEvery) == 0)
-		{
-			Collect(pHeapManager);
-			numCollects++;
-		}
-	} while (1);
-#if defined(SUPPORTS_SHOWFREEBLOCKS) || defined(SUPPORTS_SHOWOUTSTANDINGALLOCATIONS)
-	printf("After exhausting allocations:\n");
-#ifdef SUPPORTS_SHOWFREEBLOCKS
-	ShowFreeBlocks(pHeapManager);
-#endif // SUPPORTS_SHOWFREEBLOCKS
-#ifdef SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-	ShowOutstandingAllocations(pHeapManager);
-#endif // SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-	printf("\n");
-#endif
-	// now free those blocks in a random order
-	if (!AllocatedAddresses.empty())
-	{
-		// randomize the addresses
-		std::random_shuffle(AllocatedAddresses.begin(), AllocatedAddresses.end());
-		// return them back to the heap manager
-		while (!AllocatedAddresses.empty())
-		{
-			void * pPtr = AllocatedAddresses.back();
-			AllocatedAddresses.pop_back();
-			bool success = Contains(pHeapManager, pPtr) && IsAllocated(pHeapManager, pPtr);
-			assert(success);
-			success = free(pHeapManager, pPtr);
-			assert(success);
-		}
-#if defined(SUPPORTS_SHOWFREEBLOCKS) || defined(SUPPORTS_SHOWOUTSTANDINGALLOCATIONS)
-		printf("After freeing allocations:\n");
-#ifdef SUPPORTS_SHOWFREEBLOCKS
-		ShowFreeBlocks(pHeapManager);
-#endif // SUPPORTS_SHOWFREEBLOCKS
-#ifdef SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-		ShowOutstandingAllocations(pHeapManager);
-#endif // SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-		printf("\n");
-#endif
-		// do garbage collection
-		Collect(pHeapManager);
-		// our heap should be one single block, all the memory it started with
-#if defined(SUPPORTS_SHOWFREEBLOCKS) || defined(SUPPORTS_SHOWOUTSTANDINGALLOCATIONS)
-		printf("After garbage collection:\n");
-#ifdef SUPPORTS_SHOWFREEBLOCKS
-		ShowFreeBlocks(pHeapManager);
-#endif // SUPPORTS_SHOWFREEBLOCKS
-#ifdef SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-		ShowOutstandingAllocations(pHeapManager);
-#endif // SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-		printf("\n");
-#endif
-		// do a large test allocation to see if garbage collection worked
-		void * pPtr = alloc(pHeapManager, sizeHeap / 2);
-		assert(pPtr);
-		if (pPtr)
-		{
-			bool success = Contains(pHeapManager, pPtr) && IsAllocated(pHeapManager, pPtr);
-			assert(success);
-			success = free(pHeapManager, pPtr);
-			assert(success);
-		}
-	}
-	Destroy(pHeapManager);
-	pHeapManager = nullptr;
-	if (pHeapMemory)
-	{
-#ifdef USE_HEAP_ALLOC
-		HeapFree(GetProcessHeap(), 0, pHeapMemory);
-#else
-		VirtualFree(pHeapMemory, 0, MEM_RELEASE);
-#endif
-	}
-	// we succeeded
-	return true;
-}
-*/
